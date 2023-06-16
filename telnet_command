@@ -1,0 +1,12 @@
+#Run below command to check if any host/ip/url is connecting through a port
+
+# Linux
+
+$ curl -v telnet://localhost:port (replace localhost with your ip and connecting port)
+$ curl -v telnet://abc.myorg.com:port (Replace abc.myorg.com with your url and connecting port
+
+
+# Windows
+
+$ telnet localhost port
+$ tenet abc.myorg.com port

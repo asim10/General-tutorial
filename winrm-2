@@ -1,0 +1,7 @@
+1.
+powershell.exe -ExecutionPolicy ByPass E:\scripts\ConfigureRemotingForAnsible.ps1 -ForceNewSSLCert -Verbose
+
+2.
+winrm set winrm/config/service/auth '@{CredSSP="true"}'
+winrm set winrm/config/client/auth '@{CredSSP="true"}'
+Enable-WSManCredSSP -Role Server

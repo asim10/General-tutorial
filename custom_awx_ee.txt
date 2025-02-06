@@ -1,0 +1,35 @@
+[ec2-user@ip-172-31-17-248 awxee_custom_ad]$ cat execution-environment.yml
+---
+version: 3
+
+build_arg_defaults:
+  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--pre'
+
+dependencies:
+  #galaxy: requirements.yml
+  python:
+    - hvac
+  system:
+    - gcc
+    - make
+    - python3-devel
+  ansible_core:
+      package_pip: ansible-core==2.14.2
+  ansible_runner:
+      package_pip: ansible-runner==2.3.1
+
+images:
+  base_image:
+    name: quay.io/ansible/awx-ee:latest
+
+additional_build_steps:
+  prepend_final: |
+    RUN whoami
+    RUN cat /etc/os-release
+  append_final:
+    - RUN echo This is a post-install command!
+    - RUN ls -la /etc
+
+    7  sudo yum install python3-pip -y
+    8  python3 -m pip install ansible-builder
+ansible-builder build --tag=asimd10/awxee_custom_ad:1.0 --container-runtime=docker --verbosity=3

@@ -11,7 +11,7 @@ pipeline {
     }
     stage('UnitTest'){
       steps{
-        echo "Testing passed."
+        echo "Testing step passed."
       }
     }
   }

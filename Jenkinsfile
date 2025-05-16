@@ -16,5 +16,10 @@ pipeline {
         echo "Testing step2 passed."
       }
     }
+    stage('UnitTest3'){
+      steps{
+        echo "Testing step3 passed."
+      }
+    }
   }
 }

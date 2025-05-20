@@ -21,9 +21,11 @@ pipeline {
         echo "Testing step3 passed."
       }
     }
-    stage('UnitTest4'){
+    stage('loop'){
       steps{
-        echo "Testing step4 passed."
+        sh '''
+            for i in {1..10}; do echo $i; done
+        '''
       }
     }
   }

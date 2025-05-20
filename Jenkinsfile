@@ -24,7 +24,7 @@ pipeline {
     stage('loop'){
       steps{
         sh '''
-            for i in {1..10}; do echo $i; done
+            for i in {1..15}; do echo $i; done
         '''
       }
     }

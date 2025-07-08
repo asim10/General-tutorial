@@ -1,0 +1,210 @@
+from flask import Flask, jsonify, request
+import requests
+import os
+
+app = Flask(__name__)
+
+# --- Configuration (Load from environment variables for security) ---
+# ARTIFACTORY_BASE_URL = os.environ.get("ARTIFACTORY_BASE_URL")
+# ARTIFACTORY_USERNAME = os.environ.get("ARTIFACTORY_USERNAME")
+# ARTIFACTORY_PASSWORD = os.environ.get("ARTIFACTORY_PASSWORD") # Or API Key
+
+# Basic authentication header
+AUTH_HEADERS = {}
+if ARTIFACTORY_USERNAME and ARTIFACTORY_PASSWORD:
+    # For password or API key, Artifactory often prefers a "username:API_KEY" structure
+    # or specific "X-JFrog-Art-Api" header. Check your Artifactory docs.
+    # For basic auth:
+    AUTH_HEADERS = {"Authorization": requests.auth._basic_auth_str(ARTIFACTORY_USERNAME, ARTIFACTORY_PASSWORD)}
+    # If using an API Key directly, it might be:
+    # AUTH_HEADERS = {"X-JFrog-Art-Api": ARTIFACTORY_PASSWORD} # assuming password is the API key
+
+# --- Helper function to fetch data from Artifactory ---
+def get_artifactory_image_info(repo_key, image_name, tag="latest"):
+    """Fetches image info from Artifactory."""
+    if not ARTIFACTORY_BASE_URL:
+        return None
+
+    # Example: Get info for a specific artifact (image manifest usually)
+    # This API path might vary slightly based on your Artifactory version and repo type.
+    # Check JFrog Artifactory REST API documentation for details.
+    # For Docker, you might query the manifest directly or use AQL.
+    # AQL is more robust for complex queries.
+    # Example using AQL for Docker image tags:
+    # https://jfrog.com/help/r/jfrog-rest-apis/aql-examples-for-docker
+    aql_query = {
+        "find": {
+            "items": {
+                "$and": [
+                    {"repo": {"$eq": repo_key}},
+                    {"name": {"$eq": "manifest.json"}}, # Docker image manifests
+                    {"path": {"$match": f"{image_name}/{tag}"}}
+                ]
+            }
+        },
+        "include": ["name", "repo", "path", "actual_sha1", "size", "created"]
+    }
+
+    try:
+        # Using AQL endpoint
+        response = requests.post(
+            f"{ARTIFACTORY_BASE_URL}/artifactory/api/search/aql",
+            json=aql_query,
+            headers=AUTH_HEADERS,
+            timeout=10 # Set a timeout
+        )
+        response.raise_for_status() # Raise an exception for HTTP errors
+        data = response.json()
+
+        if data and data.get('results'):
+            # For simplicity, just get the first result
+            item = data['results'][0]
+            return {
+                "version": tag, # AQL might give you the path, from which you can parse tag
+                "image_size_bytes": item.get("size"),
+                "last_updated": item.get("created"),
+                # You might need more complex parsing to get exact version from path etc.
+            }
+        else:
+            print(f"No results found for {repo_key}/{image_name}:{tag}")
+            return None
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching Artifactory data: {e}")
+        return None
+
+@app.route('/badge-data/<repo_key>/<image_name>/<tag>', methods=['GET'])
+def get_badge_data(repo_key, image_name, tag):
+    """
+    Endpoint to provide JSON data for Shields.io Endpoint Badge.
+    Expected Shields.io JSON format:
+    {
+      "schemaVersion": 1,
+      "label": "version",
+      "message": "1.2.3",
+      "color": "blue"
+    }
+    """
+    artifactory_info = get_artifactory_image_info(repo_key, image_name, tag)
+
+    if artifactory_info:
+        version = artifactory_info.get("version", "unknown")
+        image_size_bytes = artifactory_info.get("image_size_bytes")
+
+        # Format image size nicely (e.g., KB, MB)
+        image_size_str = "unknown"
+        if image_size_bytes is not None:
+            if image_size_bytes < 1024 * 1024:
+                image_size_str = f"{image_size_bytes / 1024:.1f} KB"
+            else:
+                image_size_str = f"{image_size_bytes / (1024 * 1024):.1f} MB"
+
+        # You can add more endpoints for other badge types (e.g., pulls, size)
+        if request.args.get('type') == 'size':
+            return jsonify({
+                "schemaVersion": 1,
+                "label": "image size",
+                "message": image_size_str,
+                "color": "yellow"
+            })
+        else: # Default to version badge
+            return jsonify({
+                "schemaVersion": 1,
+                "label": "version",
+                "message": version,
+                "color": "blue"
+            })
+    else:
+        return jsonify({
+            "schemaVersion": 1,
+            "label": "Artifactory",
+            "message": "data error",
+            "color": "red",
+            "isError": True
+        }), 500
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
+-----------------------------------------
+
+# Dockerfile for artifactory_data_service
+FROM python:3.9-slim-buster
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+COPY artifactory_data_service.py .
+EXPOSE 5000
+CMD ["python", "artifactory_data_service.py"]
+------------------------------------------
+
+requirements.txt
+Flask
+requests
+------------------------------------------
+
+kubectl create secret generic artifactory-credentials \
+  --from-literal=username='your-artifactory-username' \
+  --from-literal=password='your-artifactory-password-or-api-key'
+secret/artifactory-credentials created
+
+------------------------------------------
+
+# artifactory-data-service-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: artifactory-data-service
+  labels:
+    app: artifactory-data-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: artifactory-data-service
+  template:
+    metadata:
+      labels:
+        app: artifactory-data-service
+    spec:
+      containers:
+      - name: artifactory-data-service
+        image: your-artifactory-repo/artifactory-badge-data-service:latest # Your image
+        ports:
+        - containerPort: 5000
+        env:
+        - name: ARTIFACTORY_BASE_URL
+          value: "https://your-artifactory-instance.com" # Replace with your Artifactory URL
+        - name: ARTIFACTORY_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: artifactory-credentials # Kubernetes Secret name
+              key: username
+        - name: ARTIFACTORY_PASSWORD # Or ARTIFACTORY_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: artifactory-credentials
+              key: password # Or api_key
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "30m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+      imagePullSecrets:
+      - name: your-artifactory-registry-secret # Secret to pull this image
+---
+# artifactory-data-service-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: artifactory-data-service
+  labels:
+    app: artifactory-data-service
+spec:
+  selector:
+    app: artifactory-data-service
+  ports:
+    - protocol: TCP
+      port: 5000
+      targetPort: 5000
+  type: ClusterIP # Internal service

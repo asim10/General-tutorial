@@ -1,0 +1,28 @@
+<div class="badge-container-flex">
+  <img src="URL_OF_YOUR_BADGE_IMAGE_1" alt="Badge 1" style="width: 100px; height: 100px;">
+  <img src="URL_OF_YOUR_BADGE_IMAGE_2" alt="Badge 2" style="width: 100px; height: 100px;">
+  <img src="URL_OF_YOUR_BADGE_IMAGE_3" alt="Badge 3" style="width: 100px; height: 100px;">
+  <img src="URL_OF_YOUR_BADGE_IMAGE_4" alt="Badge 4" style="width: 100px; height: 100px;">
+  <img src="URL_OF_YOUR_BADGE_IMAGE_5" alt="Badge 5" style="width: 100px; height: 100px;">
+</div>
+
+<style>
+/* This CSS will target the Confluence-generated wrapper div around your images */
+.badge-container-flex > div {
+    display: flex;
+    flex-wrap: nowrap; /* Ensures they stay on one line if space allows */
+    justify-content: center; /* Centers the badges horizontally */
+    align-items: center; /* Vertically centers them if heights vary */
+    gap: 10px; /* Space between badges - modern and clean way */
+    /* If gap doesn't work, uncomment and adjust the margin below */
+    /* margin-left: auto; */
+    /* margin-right: auto; */
+    /* width: fit-content; */ /* Helps center the flex container if it's not 100% wide */
+}
+
+/* Optional: To ensure images behave correctly if there's any default Confluence padding */
+.badge-container-flex > div > img {
+    flex-shrink: 0; /* Prevents images from shrinking */
+    flex-grow: 0; /* Prevents images from growing */
+}
+</style>

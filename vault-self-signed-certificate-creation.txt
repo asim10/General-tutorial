@@ -1,0 +1,177 @@
+# Generate the CA private key
+openssl genrsa -out ca.key 2048
+
+# Create the CA certificate (Valid for 10 years)
+openssl req -x509 -new -nodes -key ca.key -sha256 -days 3650 -out ca.crt \
+  -subj "/CN=My-Local-CA"
+
+#Create a config file [vault.conf]
+[req]
+distinguished_name = req_distinguished_name
+x509_extensions = v3_req
+prompt = no
+[req_distinguished_name]
+CN = vault-server
+[v3_req]
+subjectAltName = @alt_names
+[alt_names]
+DNS.1 = localhost
+DNS.2 = vault
+IP.1 = 127.0.0.1
+
+# Generate Server Key
+openssl genrsa -out vault.key 2048
+
+# Generate CSR (Certificate Signing Request)
+openssl req -new -key vault.key -out vault.csr -config vault.conf
+
+# Sign the Server Cert with our CA
+openssl x509 -req -in vault.csr -CA ca.crt -CAkey ca.key \
+  -CAcreateserial -out vault.crt -days 365 -sha256 -extfile vault.conf -extensions v3_req
+
+# Generate Client Key
+openssl genrsa -out client.key 2048
+
+# Generate Client CSR
+openssl req -new -key client.key -out client.csr -subj "/CN=runtime-app"
+
+# Sign the Client Cert with our CA
+openssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key \
+  -CAcreateserial -out client.crt -days 365 -sha256
+
+#Step 1: Create the Vault Configuration
+Since your entrypoint looks for /vault/config/config.hcl, you need to create this file on your host machine at /opt/data/docker/hsvault/config/config.hcl.
+
+Important: You must also copy your vault.crt and vault.key into that same directory so Vault can access them.
+
+# /opt/data/docker/hsvault/config/config.hcl
+
+storage "file" {
+  path = "/vault/file"
+}
+
+listener "tcp" {
+  address     = "0.0.0.0:8200"
+  
+  # Enable TLS
+  tls_disable = 0
+  tls_cert_file = "/vault/config/vault.crt"
+  tls_key_file  = "/vault/config/vault.key"
+  
+  # This allows Vault to request the client certificate for Auth
+  tls_disable_client_certs = "false"
+}
+
+api_addr = "https://127.0.0.1:8200"
+cluster_addr = "https://127.0.0.1:8201"
+ui = true
+
+#Since you have your certificates ready and your docker-compose.yaml structure set up, we need to bridge the gap by creating the config.hcl file and updating your environment variables to support TLS.
+
+Step 1: Create the Vault Configuration
+Since your entrypoint looks for /vault/config/config.hcl, you need to create this file on your host machine at /opt/data/docker/hsvault/config/config.hcl.
+
+Important: You must also copy your vault.crt and vault.key into that same directory so Vault can access them.
+
+Terraform
+
+# /opt/data/docker/hsvault/config/config.hcl
+
+storage "file" {
+  path = "/vault/file"
+}
+
+listener "tcp" {
+  address     = "0.0.0.0:8200"
+  
+  # Enable TLS
+  tls_disable = 0
+  tls_cert_file = "/vault/config/vault.crt"
+  tls_key_file  = "/vault/config/vault.key"
+  
+  # This allows Vault to request the client certificate for Auth
+  tls_disable_client_certs = "false"
+}
+
+api_addr = "https://127.0.0.1:8200"
+cluster_addr = "https://127.0.0.1:8201"
+ui = true
+
+# Step 2: Update docker-compose-hs-vault.yaml
+version: '3.8'
+
+services:
+  vault:
+    container_name: hashicorp_vault
+    image: hashicorp/vault:1.17
+    ports:
+      - "8200:8200"
+      - "8201:8201"
+    environment:
+      # Change http to https
+      VAULT_ADDR: "https://127.0.0.1:8200"
+      # Point to the CA so the Vault CLI inside the container trusts itself
+      VAULT_CACERT: "/vault/config/ca.crt"
+    cap_add:
+      - IPC_LOCK
+    volumes:
+      - /opt/data/docker/hsvault/data:/vault/data:rw
+      - /opt/data/docker/hsvault/file:/vault/file:rw
+      - /opt/data/docker/hsvault/config:/vault/config:rw
+    entrypoint: vault server -config /vault/config/config.hcl
+    restart: always
+
+# Step 3: Configure Vault Auth (The "One-Time" Setup)
+# Login to Vault (using your root token initially):
+export VAULT_ADDR='https://127.0.0.1:8200'
+export VAULT_CACERT='./certs/ca.crt'
+vault login <your_root_token>
+
+# Enable Cert Auth & Register your CA:
+vault auth enable cert
+
+# Register the CA. Any cert signed by this CA can now attempt login.
+vault write auth/cert/certs/web-server \
+    display_name="homelab-app" \
+    policies="default" \
+    certificate=@certs/ca.crt \
+    ttl=3600
+
+# Generate the Runtime Token
+curl --request POST \
+    --cacert ./certs/ca.crt \
+    --cert ./certs/client.crt \
+    --key ./certs/client.key \
+    --data '{"name": "web-server"}' \
+    https://127.0.0.1:8200/v1/auth/cert/login
+
+# Initialize (Only if first time)
+# Save the Unseal Keys and Root Token!
+vault operator init
+vault operator unseal <unseal-key-1>
+vault operator unseal <unseal-key-2>
+vault operator unseal <unseal-key-3>
+
+# Configure the Certificate Auth Method
+vault login <your-root-token>
+
+# Create a Named Role: This links your ca.crt to a specific policy. We will use the default policy for now, but in production, you’d create a specific one.
+vault write auth/cert/certs/homelab-role \
+    certificate=@certs/ca.crt \
+    display_name="homelab-client" \
+    policies="default" \
+    ttl=3600
+
+# Generate the Runtime Token
+vault login -method=cert \
+    -client-cert=certs/client.crt \
+    -client-key=certs/client.key \
+    name=homelab-role
+---------------------------------
+curl --request POST \
+    --cacert certs/ca.crt \
+    --cert certs/client.crt \
+    --key certs/client.key \
+    --data '{"name": "homelab-role"}' \
+    https://127.0.0.1:8200/v1/auth/cert/login
+

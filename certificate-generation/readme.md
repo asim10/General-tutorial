@@ -132,3 +132,6 @@ openssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key \
 ## 🚀 You're Ready!
 
 You now have a working self-signed CA and issued certificates for both server and client authentication.
+
+## 🔗 Link To ansible playbook for certificate generation
+https://github.com/asim10/ansible_project/blob/main/self-signed-cert-generation.yml

@@ -1,125 +1,246 @@
-# Hashi Vault setup documentation
+# HashiCorp Vault – Docker TLS Setup Guide
 
-This guide walks you through setting up your own hashi vault using `docker` with ssl enabled.
+![Vault](https://img.shields.io/badge/HashiCorp-Vault-000000?logo=vault)
+![Docker](https://img.shields.io/badge/Docker-Enabled-2496ED?logo=docker)
+![TLS](https://img.shields.io/badge/Security-TLS%20Enabled-green)
+![Platform](https://img.shields.io/badge/Platform-Linux-blue)
+
+
+This document provides a step-by-step guide to deploying a self-hosted **HashiCorp Vault** instance using Docker with **TLS enabled**, along with initialization, auto-unseal scripting, and certificate-based authentication.
 
 ---
 
-## 📌 Prerequisites
-* Docker installed
-* Python installed (libraries `requests` `sqlite3`)
-* Basic terminal access (Linux/macOS/WSL)
+# 📚 Table of Contents
+
+- [Overview](#-overview)
+- [Architecture](#-production-architecture)
+- [Prerequisites](#-prerequisites)
+- [Vault Configuration](#-tls-configuration)
+- [Docker Deployment](#-docker-deployment)
+- [Vault CLI Setup](#-vault-cli-setup)
+- [Environment Setup](#-environment-setup)
+- [Initialization & Unseal](#-initialization--unseal)
+- [Automated Unseal](#-automated-unseal)
+- [Authentication](#-authentication)
+- [Policies](#-policies)
+- [Utilities](#-utilities)
+- [Security Considerations](#-security-considerations)
+- [Troubleshooting](#-troubleshooting)
 
 ---
 
-## ⚙️ Setup the Vault Configuration
+# 📌 Overview
 
-### Create the vault config
+This setup includes:
+
+* Vault server running in Docker
+* TLS-secured communication (HTTPS)
+* File-based storage backend
+* Automated unsealing using Python + SQLite
+* Certificate-based authentication
+* Policy-based access control
+* Utility scripts for secrets management
+
+---
+
+# 🏗️ Production Architecture
+
+```mermaid
+flowchart TB
+
+subgraph HOST["Host Machine (Linux)"]
+    CLI["Vault CLI"]
+    PY["Python Auto-Unseal Script"]
+    DB[(SQLite Vault Keys DB)]
+end
+
+subgraph DOCKER["Docker Network"]
+    VLT["HashiCorp Vault Container"]
+end
+
+subgraph TLS["TLS Layer"]
+    CA["Root CA"]
+    CERT["Client & Server Certificates"]
+end
+
+CLI -->|HTTPS + TLS| VLT
+PY -->|API Calls| VLT
+DB --> PY
+
+VLT -->|mTLS / TLS| TLS
+CLI -->|Auth| VLT
+
+VLT --> STORAGE[(File Storage Backend)]
+```
+---
+
+# ⚙️ Prerequisites
+
+Ensure the following are installed on the host machine:
+
+* Docker & Docker Compose
+* Python 3.x
+
+  * `requests`
+  * `sqlite3` (built-in)
+* Linux / WSL / macOS
+* CLI tools:
+  * `curl`
+  * `jq`
+  * `unzip`
+---
+
+# 🔐 TLS Configuration
+
+## Vault Configuration File
+
+Create the Vault configuration file:
+
+```bash
+/opt/data/docker/hsvault/config/config.hcl
+```
+
+### `config.hcl`
+
 ```hcl
-# /opt/data/docker/hsvault/config/config.hcl
 storage "file" {
   path = "/vault/file"
 }
 
 listener "tcp" {
-  address     = "0.0.0.0:8200"
-  
-  # Enable TLS
-  tls_disable = 0
+  address = "0.0.0.0:8200"
+
+  tls_disable   = 0
   tls_cert_file = "/vault/config/vault.crt"
   tls_key_file  = "/vault/config/vault.key"
-  
-  # This allows Vault to request the client certificate for Auth
-  tls_disable_client_certs = "false"
+
+  tls_disable_client_certs = false
 }
 
-api_addr = "https://127.0.0.1:8200"
+api_addr     = "https://127.0.0.1:8200"
 cluster_addr = "https://127.0.0.1:8201"
-ui = true
+ui           = true
 ```
+
 ### ⚠️ Notes
-* Since your entrypoint looks for /vault/config/config.hcl, you need to create this file on your host machine at /opt/data/docker/hsvault/config/config.hcl.
-* Important: You must also copy your vault.crt and vault.key into that same directory so Vault can access them.
+
+* Ensure the following files exist in `/opt/data/docker/hsvault/config/`:
+
+  * `vault.crt`
+  * `vault.key`
+  * `ca.crt`
+* These certificates are required for TLS communication and client trust.
+
 ---
 
-## Setup the docker container
+# 🐳 Docker Deployment
 
-### Create docker-compose file
+## Docker Compose Configuration
+
 ```yaml
-# docker-compose.yaml
 services:
   vault:
     container_name: hashicorp_vault
     image: hashicorp/vault:1.17
+
     ports:
       - "8200:8200"
       - "8201:8201"
+
     environment:
-      # Change http to https
       VAULT_ADDR: "https://127.0.0.1:8200"
-      # Point to the CA so the Vault CLI inside the container trusts itself
       VAULT_CACERT: "/vault/config/ca.crt"
+
     cap_add:
       - IPC_LOCK
+
     volumes:
       - /opt/data/docker/hsvault/data:/vault/data:rw
       - /opt/data/docker/hsvault/file:/vault/file:rw
       - /opt/data/docker/hsvault/config:/vault/config:rw
-    entrypoint: vault server -config /vault/config/config.hcl
+
+    command: vault server -config=/vault/config/config.hcl
     restart: always
 ```
-### Start the Container
+
+## Start Vault
 
 ```bash
-docker compose up -d #RHEL
-docker-compose up -d #Debian
+docker compose up -d   # Docker Compose v2
+# or
+docker-compose up -d   # Legacy
 ```
+
 ---
 
-## Configure Vault
+# 🧰 Vault CLI Setup
 
-### Download vault client in the host
 ```bash
 curl -O https://releases.hashicorp.com/vault/1.20.0/vault_1.20.0_linux_amd64.zip
 unzip vault_1.20.0_linux_amd64.zip
 sudo mv vault /usr/local/bin/
-# Run below command to validate vault
+
 vault version
-# Output should be like this - Vault v1.20.0 (6fdd6b59e97d97a9e19b0fb5304bf879c190295e), built 2025-06-23T10:21:30Z
 ```
 
-### Setup vault profile
+Expected output:
+
+```
+Vault v1.20.0
+```
+
+---
+
+# 🌐 Environment Setup
+
 ```bash
 echo 'export VAULT_ADDR="https://localhost:8200"' >> ~/.bash_profile
 echo 'export VAULT_CACERT="/opt/homelab/ssl/ca.crt"' >> ~/.bash_profile
 source ~/.bash_profile
 ```
 
-### Initialize the vault
+---
+
+# 🔐 Initialization & Unseal
+
+## Initialize Vault
+
 ```bash
 vault operator init
-# This command will provide the unseal keys and root token, keep it somewhere safe
 ```
 
-### Unseal the Vault
+> ⚠️ Store unseal keys and root token securely.
+
 ---
-#### Using unseal keys retried earlier
+
+## Manual Unseal
+
 ```bash
-vault operator unseal <key_share>
-# You must repeat this command until the Unseal Progress threshold (e.g., 3/5) is met.
-vault status # To check the vault status
+vault operator unseal <key_1>
+vault operator unseal <key_2>
+vault operator unseal <key_3>
 ```
-#### Using automated script
+
+Repeat until threshold is met.
+Check status:
+
+```bash
+vault status
+```
+
 ---
-##### Create a sqlite db using python to store the keys
+
+# 🤖 Automated Unseal
+
+## SQLite Key Store
+
 ```python
-### Create a sample db file
 import sqlite3
 
 def create_sample_db():
     conn = sqlite3.connect('./db_files/vault_key.db')
     cursor = conn.cursor()
 
-    # Create a sample table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS vaultkeys (
             id INTEGER PRIMARY KEY,
@@ -128,164 +249,129 @@ def create_sample_db():
         )
     ''')
 
-    # Insert sample data
     keys = [
-        (1, 'unseal_Key_1', '********************************************'),
-        (2, 'unseal_Key_2', '********************************************'),
-        (3, 'unseal_Key_3', '********************************************'),
-        (4, 'unseal_Key_4', '********************************************'),
-        (5, 'unseal_Key_5', '********************************************'),
-        (6, 'root_token', 'hvs.*****************************'),
+        (1, 'unseal_key_1', '***'),
+        (2, 'unseal_key_2', '***'),
+        (3, 'unseal_key_3', '***'),
+        (4, 'unseal_key_4', '***'),
+        (5, 'unseal_key_5', '***'),
+        (6, 'root_token', 'hvs.***')
     ]
-    
+
     cursor.executemany('INSERT INTO vaultkeys VALUES (?,?,?)', keys)
     conn.commit()
     conn.close()
-    print("✅ vault_key.db created!")
 
 create_sample_db()
 ```
 
-##### Create a python script to unseal the vault
+---
+
+## Python Auto-Unseal Script
+
+- Reads keys from SQLite
+- Calls Vault API
+- Tracks seal status
+
 ```python
 # vault-unseal.py
 import requests
 import sqlite3
 import time
 
-def get_vault_keys():
-    conn = sqlite3.connect('/opt/homelab/utilities/vault/utility/db_files/vault_key.db')
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    QUERY = f"SELECT key from vaultkeys WHERE attribute like '%unseal%'"
-    cursor.execute(QUERY)
-    rows = cursor.fetchall()
-    conn.close()
-
-    # Convert to a list of strings
-    unseal_keys = [row['key'] for row in rows]
-
-    return unseal_keys
-
-
-
 VAULT_ADDR = "https://127.0.0.1:8200"
-CA_CERT = "/opt/homelab/ssl/ca.crt"  
-UNSEAL_KEYS = get_vault_keys()
+CA_CERT = "/opt/homelab/ssl/ca.crt"
 
-def check_status(attempt=1, max_attempts=5):
-    url = f"{VAULT_ADDR}/v1/sys/health"
-    try:
-        r = requests.get(url, verify=CA_CERT)
-        if r.status_code == 200:
-            print("[INFO] Vault is initialized and unsealed ✅")
-        elif r.status_code == 429:
-            print("[INFO] Vault is unsealed but in standby mode ⚠️")
-        elif r.status_code == 472:
-            print("[INFO] Vault is sealed 🔒")
-        elif r.status_code == 501:
-            print("[WARN] Vault is not initialized ❌")
-        elif r.status_code == 503:
-            print("[WARN] Vault is sealed 🔒")
-        else:
-            print(f"[WARN] Unknown status: {r.status_code}")
-    except requests.exceptions.ConnectionError as e:
-        print(f"[ERROR] Attempt {attempt}: Connection refused ❌")
+def get_keys():
+    conn = sqlite3.connect('/opt/homelab/utilities/vault/db/vault_key.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT key FROM vaultkeys WHERE attribute LIKE '%unseal%'")
+    keys = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    return keys
 
-        if attempt >= max_attempts:
-            print("Max attempts reached.")
-            raise
-
-        time.sleep(5)
-        return check_status(attempt + 1, max_attempts)
-    except requests.exceptions.SSLError as e:
-        print(f"[ERROR] SSL Error: {e}")
-    except Exception as e:
-        print(f"[ERROR] Error: {e}")
-
-
-def is_sealed():
-    url = f"{VAULT_ADDR}/v1/sys/seal-status"
-    r = requests.get(url, verify=CA_CERT)
-    return r.json().get("sealed", True)
-
-
-def unseal_vault():
+def unseal():
     url = f"{VAULT_ADDR}/v1/sys/unseal"
-
-    for key in UNSEAL_KEYS:
+    for key in get_keys():
         r = requests.put(url, json={"key": key}, verify=CA_CERT)
         data = r.json()
-
-        print(f"[INFO] Progress: {data.get('progress')}/{data.get('t')} ⌛")
-
+        print(f"Progress: {data.get('progress')}/{data.get('t')}")
         if not data.get("sealed"):
-            print("[INFO] Vault successfully unsealed 🎉")
+            print("Vault unsealed successfully")
             return
 
-    print("Vault is still sealed.")
-
-
 if __name__ == "__main__":
-    check_status()
-
-    if is_sealed():
-        print("[INFO] Attempting to unseal Vault... 🏃")
-        unseal_vault()
-    else:
-        print("[INFO] Vault is already unsealed ✅")
-        
+    unseal()
 ```
-##### Schedule the script in `crontab` to start at reboot of the host
-```bash
-crontab -e
 
-# Vault unseal
-@reboot python /opt/homelab/utilities/vault/utility/vault-unseal.py >> /opt/homelab/utilities/logs/vault-unseal.log
-```
 ---
 
-### Login to Vault
+## Cron Automation
+
 ```bash
-vault login <your-root-token>
+@reboot python /opt/homelab/utilities/vault/vault-unseal.py >> /opt/homelab/logs/vault-unseal.log
 ```
 
-### Enable the certificate auth method
+---
+
+# 🔑 Authentication
+
+## Login
+
+```bash
+vault login <root-token>
+```
+
+---
+
+## Enable Certificate Auth
+
 ```bash
 vault auth enable cert
 ```
 
-### Create a Named Role with CA Cert registration.
+---
+
+## Configure Certificate Role
+
 ```bash
-# Any cert signed by this CA can now attempt login. This links your ca.crt to a specific policy. We will use the default policy for now, but in production, you’d create a specific one.
 vault write auth/cert/certs/homelab-role \
     certificate=@/opt/homelab/ssl/ca.crt \
     display_name="homelab-client" \
     policies="default" \
     token_ttl=1h \
     token_max_ttl=4h
-# tokens will have a validity of 1 hour/ 3600 seconds
 ```
 
-### Generate the Runtime Token
+---
+
+## Generate Login Token
+
+### cURL
 
 ```bash
-# Using cUrl
 curl --request POST \
-    --cacert /opt/homelab/ssl/ca.crt \
-    --cert /opt/homelab/ssl/client.crt \
-    --key /opt/homelab/ssl/client.key \
-    --data '{"name": "homelab-role"}' \
-    https://127.0.0.1:8200/v1/auth/cert/login
-
-# Using vault CLI
-vault login -method=cert \
-    -client-cert=certs/client.crt \
-    -client-key=certs/client.key \
-    name=homelab-role
+  --cacert /opt/homelab/ssl/ca.crt \
+  --cert /opt/homelab/ssl/client.crt \
+  --key /opt/homelab/ssl/client.key \
+  https://127.0.0.1:8200/v1/auth/cert/login
 ```
 
-### Create a new policy
+### Vault CLI
+
+```bash
+vault login -method=cert \
+  -client-cert=client.crt \
+  -client-key=client.key \
+  name=homelab-role
+```
+
+---
+
+# 📜 Policies
+
+## Create Policy
+
 ```bash
 cat <<EOF > homelab-policy.hcl
 path "secret/*" {
@@ -300,40 +386,51 @@ path "secret/policy/homelab-internal/*" {
   capabilities = ["create", "read", "update", "delete", "list"]
 }
 EOF
+```
 
-# apply the policy
+Apply:
+
+```bash
 vault policy write homelab-policy homelab-policy.hcl
 ```
 
-### Apply the policy to the previously created role
+Attach to role:
+
 ```bash
 vault write auth/cert/certs/homelab-role \
     certificate=@/opt/homelab/ssl/ca.crt \
-    display_name="homelab-client" \
-    policies="default,homelab-policy" \
-    token_ttl=1h \
-    token_max_ttl=4h
+    policies="default,homelab-policy"
 ```
----
-## Create Utility
 
-### Generate Vault token
+---
+
+# 🧪 Utilities
+
+## Get Vault Token
+
 ```bash
-# get-vault-token.sh 
+# get-vault-token.sh
+
 #!/bin/bash
 
-COMMON_SSL_DIR='/opt/homelab/ssl'
+COMMON_SSL_DIR="/opt/homelab/ssl"
 VAULT_URL="https://localhost:8200"
 
-while [[ -z ${VAULT_TOKEN} ]] || [[ ${VAULT_TOKEN} == "null" ]]; do
-  VAULT_TOKEN=$(curl -sk -X POST --cert ${COMMON_SSL_DIR}/vault_client.crt --key ${COMMON_SSL_DIR}/vault_client.key ${VAULT_URL}/v1/auth/cert/login | jq -r '.auth.client_token')
-  if [[ -z ${VAULT_TOKEN} ]] || [[ ${VAULT_TOKEN} == "null" ]]; then sleep 2; fi
+while [[ -z $VAULT_TOKEN || $VAULT_TOKEN == "null" ]]; do
+  VAULT_TOKEN=$(curl -sk --cert ${COMMON_SSL_DIR}/vault_client.crt \
+    --key ${COMMON_SSL_DIR}/vault_client.key \
+    ${VAULT_URL}/v1/auth/cert/login | jq -r '.auth.client_token')
+
+  sleep 2
 done
 
-echo ${VAULT_TOKEN}
+echo "$VAULT_TOKEN"
 ```
 
-### Create secrets
+---
+
+## Create Secret
+
 ```bash
 # create-vault-secret.sh
 
@@ -375,8 +472,10 @@ curl --cacert "${CA_CERT}" \
 # Clear Vault token
 export VAULT_TOKEN=""
 ```
+---
 
-### Retrive vault secret
+## Retrieve Secret
+
 ```bash
 # get-vault-secret.sh
 
@@ -402,3 +501,33 @@ curl --cacert "${CA_CERT}" \
 # Clear Vault token
 export VAULT_TOKEN=""
 ```
+---
+
+# 🔐 Security Considerations
+
+* Never store unseal keys in plain SQLite in production
+* Prefer auto-unseal via cloud KMS (AWS/GCP/Azure)
+* Restrict TLS private key permissions
+* Rotate root tokens immediately after setup
+* Avoid long-lived tokens in scripts
+
+---
+
+# 🧾 Troubleshooting
+
+| Issue              | Cause                  | Fix               |
+| ------------------ | ---------------------- | ----------------- |
+| Vault sealed       | Not enough unseal keys | Run unseal again  |
+| TLS error          | Invalid cert           | Verify CA chain   |
+| Connection refused | Vault not running      | Check Docker logs |
+
+---
+
+# 📌 Summary
+
+This setup provides a **fully containerized, TLS-secured Vault environment** with:
+
+* Manual + automated unsealing
+* Certificate-based authentication
+* Scriptable secrets management
+* Policy-driven access control

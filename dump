@@ -1,1 +1,8 @@
 https://jpg-kid-loving-decrease.trycloudflare.com/
+
+yt-dlp \
+  -x \
+  --audio-format wav \
+  --download-sections "*00:01:04-00:01:15" \
+  -o "extracted_audio.%(ext)s" \
+  "https://www.youtube.com/watch?v=_SIdurauOWc"
